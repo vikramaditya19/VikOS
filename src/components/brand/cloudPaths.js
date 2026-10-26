@@ -1,0 +1,8 @@
+// Index 0 is the outer body; 1 and 2 are the inner curls.
+export const CLOUD_VIEWBOX = '0 0 240 130'
+
+export const CLOUD_PATHS = [
+  'M30 112 C6 112 2 80 28 76 C22 50 56 38 74 56 C82 22 130 18 142 50 C168 32 204 46 198 74 C226 74 232 108 204 112 L30 112 Z',
+  'M64 96 C56 78 80 66 94 78 C104 88 94 100 82 96',
+  'M122 86 C128 70 150 70 154 84',
+]

@@ -1,122 +1,163 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AnimatePresence } from 'framer-motion'
+import Wallpaper from './components/desktop/Wallpaper'
+import DesktopIcons from './components/desktop/DesktopIcons'
+import DesktopContextLayer from './components/desktop/DesktopContextLayer'
+import Taskbar from './components/desktop/Taskbar'
+import Launcher from './components/desktop/Launcher'
+import AppWindow from './components/desktop/AppWindow'
+import BootScreen from './components/boot/BootScreen'
+import { getApp } from './apps/registry'
 
-function App() {
-  const [count, setCount] = useState(0)
+// Starting window size per app (shrunk automatically on small screens)
+const DEFAULT_SIZES = {
+  files: { w: 780, h: 480 },
+  terminal: { w: 700, h: 420 },
+  monitor: { w: 600, h: 470 },
+}
+const FALLBACK_SIZE = { w: 560, h: 380 }
+
+export default function App() {
+  const workspaceRef = useRef(null)
+  const zRef = useRef(10) // ever-increasing counter used for window stacking
+  const slotRef = useRef(0) // cascades new windows so they don't overlap exactly
+
+  const [booting, setBooting] = useState(true)
+  const [launcherOpen, setLauncherOpen] = useState(false)
+  // [{ appId, z, x, y, w, h, minimized, maximized }]
+  const [windows, setWindows] = useState([])
+
+  const finishBoot = useCallback(() => setBooting(false), [])
+  const closeLauncher = useCallback(() => setLauncherOpen(false), [])
+  const toggleLauncher = useCallback(() => setLauncherOpen((open) => !open), [])
+
+  const updateWindow = useCallback((appId, patch) => {
+    setWindows((ws) => ws.map((w) => (w.appId === appId ? { ...w, ...patch } : w)))
+  }, [])
+
+  const focusApp = useCallback(
+    (appId) => {
+      updateWindow(appId, { z: ++zRef.current, minimized: false })
+    },
+    [updateWindow],
+  )
+
+  const openApp = useCallback((appId) => {
+    const z = ++zRef.current
+    const slot = slotRef.current++ % 6
+    setLauncherOpen(false)
+
+    const box = workspaceRef.current?.getBoundingClientRect()
+    const bw = box?.width ?? 1200
+    const bh = box?.height ?? 700
+
+    setWindows((ws) => {
+      // One window per app: if it's already open, restore it and bring it to the front
+      if (ws.some((w) => w.appId === appId)) {
+        return ws.map((w) => (w.appId === appId ? { ...w, z, minimized: false } : w))
+      }
+      const size = DEFAULT_SIZES[appId] ?? FALLBACK_SIZE
+      const w = Math.max(320, Math.min(size.w, bw - 24))
+      const h = Math.max(220, Math.min(size.h, bh - 24))
+      const x = Math.max(8, Math.min(120 + slot * 32, bw - w - 8))
+      const y = Math.max(8, Math.min(24 + slot * 32, bh - h - 8))
+      return [...ws, { appId, z, x, y, w, h, minimized: false, maximized: false }]
+    })
+  }, [])
+
+  const closeApp = useCallback((appId) => {
+    setWindows((ws) => ws.filter((w) => w.appId !== appId))
+  }, [])
+
+  const minimizeApp = useCallback(
+    (appId) => updateWindow(appId, { minimized: true }),
+    [updateWindow],
+  )
+
+  const toggleMaximize = useCallback((appId) => {
+    const z = ++zRef.current
+    setWindows((ws) => ws.map((w) => (w.appId === appId ? { ...w, maximized: !w.maximized, z } : w)))
+  }, [])
+
+  const restart = useCallback(() => {
+    setLauncherOpen(false)
+    setWindows([])
+    setBooting(true)
+  }, [])
+
+  // The active window is the visible one with the highest z
+  const visible = windows.filter((w) => !w.minimized)
+  const activeAppId = visible.length ? visible.reduce((top, w) => (w.z > top.z ? w : top)).appId : null
+
+  // Taskbar button: minimized -> restore, in front -> minimize, behind -> bring forward
+  const onTaskbarClick = (appId) => {
+    const win = windows.find((w) => w.appId === appId)
+    if (!win) return
+    if (win.minimized) focusApp(appId)
+    else if (appId === activeAppId) minimizeApp(appId)
+    else focusApp(appId)
+  }
+
+  // Keep windows reachable if the browser window shrinks
+  useEffect(() => {
+    const onResize = () => {
+      const box = workspaceRef.current?.getBoundingClientRect()
+      if (!box) return
+      setWindows((ws) =>
+        ws.map((w) => ({
+          ...w,
+          x: Math.max(120 - w.w, Math.min(w.x, box.width - 120)),
+          y: Math.max(0, Math.min(w.y, box.height - 40)),
+        })),
+      )
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <main className="relative h-full w-full overflow-hidden bg-obsidian-950">
+      <Wallpaper />
+      <DesktopContextLayer onOpenApp={openApp} />
 
-      <div className="ticks"></div>
+      {/* Workspace: everything above the taskbar. z-[10] makes it one stacking layer,
+          so window z-indexes can grow forever without ever covering the taskbar. */}
+      <div ref={workspaceRef} className="absolute inset-x-0 bottom-12 top-0 z-[10]">
+        <DesktopIcons onOpenApp={openApp} />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+        <AnimatePresence>
+          {windows.map((w) => (
+            <AppWindow
+              key={w.appId}
+              app={getApp(w.appId)}
+              win={w}
+              isActive={w.appId === activeAppId}
+              workspaceRef={workspaceRef}
+              onFocus={() => focusApp(w.appId)}
+              onUpdate={(patch) => updateWindow(w.appId, patch)}
+              onClose={() => closeApp(w.appId)}
+              onMinimize={() => minimizeApp(w.appId)}
+              onToggleMaximize={() => toggleMaximize(w.appId)}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <AnimatePresence>
+        {launcherOpen && (
+          <Launcher key="launcher" onOpenApp={openApp} onRestart={restart} onClose={closeLauncher} />
+        )}
+      </AnimatePresence>
+
+      <Taskbar
+        launcherOpen={launcherOpen}
+        onToggleLauncher={toggleLauncher}
+        windows={windows}
+        activeAppId={activeAppId}
+        onTaskbarClick={onTaskbarClick}
+      />
+
+      <AnimatePresence>{booting && <BootScreen key="boot" onDone={finishBoot} />}</AnimatePresence>
+    </main>
   )
 }
-
-export default App
